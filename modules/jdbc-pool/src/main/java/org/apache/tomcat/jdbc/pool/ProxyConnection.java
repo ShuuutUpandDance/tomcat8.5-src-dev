@@ -97,7 +97,7 @@ public class ProxyConnection extends JdbcInterceptor {
             if (connection==null) return null; //noop for already closed.
             PooledConnection poolc = this.connection;
             this.connection = null;
-            pool.returnConnection(poolc);
+            pool.returnConnection(poolc); // Connection::close 被调用时，触发的其实是 pool 的 return 方法
             return null;
         } else if (compare(TOSTRING_VAL,method)) {
             return this.toString();
@@ -123,6 +123,7 @@ public class ProxyConnection extends JdbcInterceptor {
         try {
             PooledConnection poolc = connection;
             if (poolc!=null) {
+                // 大部分方法调用最终都由 pooledConnection 持有的 connection 对象完成
                 return method.invoke(poolc.getConnection(),args);
             } else {
                 throw new SQLException("Connection has already been closed.");

@@ -195,8 +195,9 @@ public class ConnectionPool {
      */
     public Connection getConnection() throws SQLException {
         //check out a connection
+        // 立刻、使用配置中的用户名和密码获取一个连接
         PooledConnection con = borrowConnection(-1,null,null);
-        return setupConnection(con);
+        return setupConnection(con); // 配置并返回连接
     }
 
 
@@ -216,6 +217,7 @@ public class ConnectionPool {
      */
     public Connection getConnection(String username, String password) throws SQLException {
         // check out a connection
+        // 立刻、使用指定的用户名和密码获取一个连接
         PooledConnection con = borrowConnection(-1, username, password);
         return setupConnection(con);
     }
@@ -293,24 +295,27 @@ public class ConnectionPool {
      */
     protected Connection setupConnection(PooledConnection con) throws SQLException {
         //fetch previously cached interceptor proxy - one per connection
+        // 为 pooledConnection 配置拦截器（代理对象）
+        // 每个 pooledConnection 都有一个拦截器链表，handler 指向的是头结点，且链表至少有 1 个元素，该元素是 proxyConnection 对象
         JdbcInterceptor handler = con.getHandler();
-        if (handler==null) {
+        if (handler==null) { // 头结点为空，链表尚未构建
             //build the proxy handler
+            // 以 proxyConnection 对象作为尾节点
             handler = new ProxyConnection(this,con,getPoolProperties().isUseEquals());
             //set up the interceptor chain
             PoolProperties.InterceptorDefinition[] proxies = getPoolProperties().getJdbcInterceptorsAsArray();
-            for (int i=proxies.length-1; i>=0; i--) {
+            for (int i=proxies.length-1; i>=0; i--) { // 根据配置参数添加更多拦截器
                 try {
                     //create a new instance
                     JdbcInterceptor interceptor = proxies[i].getInterceptorClass().newInstance();
                     //configure properties
                     interceptor.setProperties(proxies[i].getProperties());
                     //setup the chain
-                    interceptor.setNext(handler);
+                    interceptor.setNext(handler); // 每次都是在链表头部添加新节点
                     //call reset
                     interceptor.reset(this, con);
                     //configure the last one to be held by the connection
-                    handler = interceptor;
+                    handler = interceptor; // handler 永远指向头结点
                 }catch(Exception x) {
                     SQLException sx = new SQLException("Unable to instantiate interceptor chain.");
                     sx.initCause(x);
@@ -318,20 +323,22 @@ public class ConnectionPool {
                 }
             }
             //cache handler for the next iteration
-            con.setHandler(handler);
-        } else {
+            con.setHandler(handler); // 把头结点交给 pooledConnection
+        } else { // 头结点存在，链表已构建过（说明该连接已被 get 过）
             JdbcInterceptor next = handler;
             //we have a cached handler, reset it
-            while (next!=null) {
+            while (next!=null) { // 重置链表上所有拦截器的状态
                 next.reset(this, con);
                 next = next.getNext();
             }
         }
         // setup statement proxy
-        if (getPoolProperties().getUseStatementFacade()) {
+        if (getPoolProperties().getUseStatementFacade()) { // 根据配置判断是否添加 statement 拦截器（代理对象）
             handler = new StatementFacade(handler);
         }
         try {
+            // 使用 JDK 动态代理机制（要求被代理类实现了接口，生成的代理类将实现同样的接口）
+            // 1. 获取实现了指定接口的代理类的构造函数
             getProxyConstructor(con.getXAConnection() != null);
             //create the proxy
             //TODO possible optimization, keep track if this connection was returned properly, and don't generate a new facade
@@ -339,9 +346,11 @@ public class ConnectionPool {
             if (getPoolProperties().getUseDisposableConnectionFacade() ) {
                 connection = (Connection)proxyClassConstructor.newInstance(new Object[] { new DisposableConnectionFacade(handler) });
             } else {
+                // 2. 将 InvocationHandler 传递给构造函数，构造代理对象（本质上是拦截器链表头结点对应的代理对象）
                 connection = (Connection)proxyClassConstructor.newInstance(new Object[] {handler});
             }
             //return the connection
+            // 返回的其实是拦截器链表头结点对应代理对象（拦截器内部实现机制可以触发整条链路上的拦截方法）
             return connection;
         }catch (Exception x) {
             SQLException s = new SQLException();
@@ -376,19 +385,24 @@ public class ConnectionPool {
      * @param force - true to even close the active connections
      */
     protected void close(boolean force) {
+        // 关闭整个连接池，需要清理所有空闲连接 idle，甚至包括活跃连接 busy
         //are we already closed
+        // 使用 volatile 标志位来实现线程安全
         if (this.closed) return;
         //prevent other threads from entering
         this.closed = true;
         //stop background thread
+        // 停止 cleaner 线程
         if (poolCleaner!=null) {
             poolCleaner.stopRunning();
         }
 
         /* release all idle connections */
+        // pool 是指向待清理队列的指针，先指向 idle，再根据标记 force 来决定是否指向 busy
         BlockingQueue<PooledConnection> pool = (idle.size()>0)?idle:(force?busy:idle);
         while (pool.size()>0) {
             try {
+                // 遍历清理 pool 指向队列中所有的连接
                 //retrieve the next connection
                 PooledConnection con = pool.poll(1000, TimeUnit.MILLISECONDS);
                 //close it and retrieve the next one, if one is available
@@ -409,9 +423,13 @@ public class ConnectionPool {
                     Thread.currentThread().interrupt();
                 }
             }
+            // 程序到达这里时理应清理完毕
+            // 如果当前指向的是 idle，就根据 force 判断是否再指向 busy
             if (pool.size()==0 && force && pool!=busy) pool = busy;
         }
         if (this.getPoolProperties().isJmxEnabled()) this.jmxPool = null;
+
+        // 通知所有配置的拦截器
         PoolProperties.InterceptorDefinition[] proxies = getPoolProperties().getJdbcInterceptorsAsArray();
         for (int i=0; i<proxies.length; i++) {
             try {
@@ -430,12 +448,14 @@ public class ConnectionPool {
      * @param properties PoolProperties - properties used to initialize the pool with
      * @throws SQLException if initialization fails
      */
-    protected void init(PoolConfiguration properties) throws SQLException {
+    protected void init(PoolConfiguration properties) throws SQLException {// 初始化连接池
         poolProperties = properties;
 
         //make sure the pool is properly configured
+        // 检查核心参数是否配置合理（initialSize, maxIdle, minIdle, maxActive）
         checkPoolConfiguration(properties);
 
+        // 初始化 busy 和 idle 队列
         //make space for 10 extra in case we flow over a bit
         busy = new LinkedBlockingQueue<>();
         //busy = new FairBlockingQueue<PooledConnection>();
@@ -449,6 +469,7 @@ public class ConnectionPool {
             idle = new LinkedBlockingQueue<>();
         }
 
+        // 初始化 cleaner 线程
         initializePoolCleaner(properties);
 
         //create JMX MBean
@@ -456,6 +477,7 @@ public class ConnectionPool {
 
         //Parse and create an initial set of interceptors. Letting them know the pool has started.
         //These interceptors will not get any connection.
+        // 通知所有配置的拦截器
         PoolProperties.InterceptorDefinition[] proxies = getPoolProperties().getJdbcInterceptorsAsArray();
         for (int i=0; i<proxies.length; i++) {
             try {
@@ -478,6 +500,7 @@ public class ConnectionPool {
         //initialize the pool with its initial set of members
         PooledConnection[] initialPool = new PooledConnection[poolProperties.getInitialSize()];
         try {
+            // 调用 borrowConnection 创建连接
             for (int i = 0; i < initialPool.length; i++) {
                 initialPool[i] = this.borrowConnection(0, null, null); //don't wait, should be no contention
             } //for
@@ -491,6 +514,7 @@ public class ConnectionPool {
             }
         } finally {
             //return the members as idle to the pool
+            // 调用 returnConnection 方法将这些连接放入 idle 队列
             for (int i = 0; i < initialPool.length; i++) {
                 if (initialPool[i] != null) {
                     try {this.returnConnection(initialPool[i]);}catch(Exception x){/*NOOP*/}
@@ -552,6 +576,7 @@ public class ConnectionPool {
      * @param con PooledConnection
      */
     protected void abandon(PooledConnection con) {
+        // abandon 本质上还是要 release，只是根据配置决定是否要打 log 以及通知 jmx
         if (con == null)
             return;
         try {
@@ -635,7 +660,7 @@ public class ConnectionPool {
      * @throws SQLException Failed to get a connection
      */
     private PooledConnection borrowConnection(int wait, String username, String password) throws SQLException {
-
+        // 尝试从池中获取并返回 idle 连接，若无法获得，根据当前状态创建并返回新连接
         if (isClosed()) {
             throw new SQLException("Connection pool closed.");
         } //end if
@@ -643,31 +668,36 @@ public class ConnectionPool {
         //get the current time stamp
         long now = System.currentTimeMillis();
         //see if there is one available immediately
+        // 尝试从 idle 队列立刻获取连接，不做等待
         PooledConnection con = idle.poll();
 
         while (true) {
             if (con!=null) {
                 //configure the connection and return it
+                // 成功获取到 idle 连接，进行一些状态检查和相关配置
                 PooledConnection result = borrowConnection(now, con, username, password);
                 borrowedCount.incrementAndGet();
+                // 配置成功，返回连接
                 if (result!=null) return result;
             }
 
+            // 未获取到 idle 连接，尝试创建新连接
             //if we get here, see if we need to create one
             //this is not 100% accurate since it doesn't use a shared
             //atomic variable - a connection can become idle while we are creating
             //a new connection
-            if (size.get() < getPoolProperties().getMaxActive()) {
+            if (size.get() < getPoolProperties().getMaxActive()) { // 当前池大小尚未达到限制
                 //atomic duplicate check
-                if (size.addAndGet(1) > getPoolProperties().getMaxActive()) {
+                if (size.addAndGet(1) > getPoolProperties().getMaxActive()) { // 尝试安全地增加池大小
                     //if we got here, two threads passed through the first if
-                    size.decrementAndGet();
-                } else {
+                    size.decrementAndGet(); // 本次操作导致池大小超出限制，undo 增加操作
+                } else { // 成功安全地增加池大小，创建并返回新连接
                     //create a connection, we're below the limit
                     return createConnection(now, con, username, password);
                 }
             } //end if
 
+            // 因池大小已达上限，也无法创建新连接，只能等待一个 idle 连接出现
             //calculate wait time for this iteration
             long maxWait = wait;
             //if the passed in wait time is -1, means we should use the pool property value
@@ -675,10 +705,12 @@ public class ConnectionPool {
                 maxWait = (getPoolProperties().getMaxWait()<=0)?Long.MAX_VALUE:getPoolProperties().getMaxWait();
             }
 
+            // 计算等待时间
             long timetowait = Math.max(0, maxWait - (System.currentTimeMillis() - now));
             waitcount.incrementAndGet();
             try {
                 //retrieve an existing connection
+                // 在时间允许范围内，等待一个 idle 连接出现
                 con = idle.poll(timetowait, TimeUnit.MILLISECONDS);
             } catch (InterruptedException ex) {
                 if (getPoolProperties().getPropagateInterruptState()) {
@@ -690,7 +722,9 @@ public class ConnectionPool {
             } finally {
                 waitcount.decrementAndGet();
             }
+
             if (maxWait==0 && con == null) { //no wait, return one if we have one
+                // 配置为不需要等，尝试立刻获取一次，但是没有得到，报错
                 if (jmxPool!=null) {
                     jmxPool.notify(org.apache.tomcat.jdbc.pool.jmx.ConnectionPool.POOL_EMPTY, "Pool empty - no wait.");
                 }
@@ -699,14 +733,15 @@ public class ConnectionPool {
             }
             //we didn't get a connection, lets see if we timed out
             if (con == null) {
-                if ((System.currentTimeMillis() - now) >= maxWait) {
+                // 配置为需要等，等了合理的时间，但是没有等到
+                if ((System.currentTimeMillis() - now) >= maxWait) { // 此时已超时，报错
                     if (jmxPool!=null) {
                         jmxPool.notify(org.apache.tomcat.jdbc.pool.jmx.ConnectionPool.POOL_EMPTY, "Pool empty - timeout.");
                     }
                     throw new PoolExhaustedException("[" + Thread.currentThread().getName()+"] " +
-                        "Timeout: Pool empty. Unable to fetch a connection in " + (maxWait / 1000) +
-                        " seconds, none available[size:"+size.get() +"; busy:"+busy.size()+"; idle:"+idle.size()+"; lastwait:"+timetowait+"].");
-                } else {
+                            "Timeout: Pool empty. Unable to fetch a connection in " + (maxWait / 1000) +
+                            " seconds, none available[size:"+size.get() +"; busy:"+busy.size()+"; idle:"+idle.size()+"; lastwait:"+timetowait+"].");
+                } else { // 尚未超时（应该不可能进入此分支）
                     //no timeout, lets try again
                     continue;
                 }
@@ -724,7 +759,9 @@ public class ConnectionPool {
      * @throws SQLException Failed to get a connection
      */
     protected PooledConnection createConnection(long now, PooledConnection notUsed, String username, String password) throws SQLException {
+        // borrow 时无法获得 idle 连接，尝试创建
         //no connections where available we'll create one
+        // 参数为 false 表示创建一个 PooledConnection 对象但是不增加池 size 的大小，因为 borrow 里已经增加过了
         PooledConnection con = create(false);
         if (username!=null) con.getAttributes().put(PooledConnection.PROP_USER, username);
         if (password!=null) con.getAttributes().put(PooledConnection.PROP_PASSWORD, password);
@@ -733,13 +770,13 @@ public class ConnectionPool {
             //connect and validate the connection
             con.lock();
             con.connect();
-            if (con.validate(PooledConnection.VALIDATE_INIT)) {
+            if (con.validate(PooledConnection.VALIDATE_INIT)) { // 状态检查
                 //no need to lock a new one, its not contented
                 con.setTimestamp(now);
                 if (getPoolProperties().isLogAbandoned()) {
                     con.setStackTrace(getThreadDump());
                 }
-                if (!busy.offer(con)) {
+                if (!busy.offer(con)) { // 尝试加入 busy 队列
                     log.debug("Connection doesn't fit into busy array, connection will not be traceable.");
                 }
                 createdCount.incrementAndGet();
@@ -780,7 +817,7 @@ public class ConnectionPool {
      */
     protected PooledConnection borrowConnection(long now, PooledConnection con, String username, String password) throws SQLException {
         //we have a connection, lets set it up
-
+        // 检查状态、添加配置
         //flag to see if we need to nullify
         boolean setToNull = false;
         try {
@@ -789,53 +826,61 @@ public class ConnectionPool {
                 return null;
             }
 
+            // 如果用户名或密码变动过，就需要强制重连
             //evaluate username/password change as well as max age functionality
             boolean forceReconnect = con.shouldForceReconnect(username, password) || con.isMaxAgeExpired();
 
+            // 如果状态不对，也需要强制重连
             if (!con.isDiscarded() && !con.isInitialized()) {
                 //here it states that the connection not discarded, but the connection is null
                 //don't attempt a connect here. It will be done during the reconnect.
                 forceReconnect = true;
             }
 
+            // 不需要强制重连的情况
             if (!forceReconnect) {
                 if ((!con.isDiscarded()) && con.validate(PooledConnection.VALIDATE_BORROW)) {
+                    // 检查状态通过
                     //set the timestamp
-                    con.setTimestamp(now);
+                    con.setTimestamp(now); // 该连接最近一次被池操作的时间
                     if (getPoolProperties().isLogAbandoned()) {
                         //set the stack trace for this pool
                         con.setStackTrace(getThreadDump());
                     }
-                    if (!busy.offer(con)) {
+                    if (!busy.offer(con)) { // 加入 busy 队列，当队列满时会返回 false，实际不太可能达到 max int 这么多
                         log.debug("Connection doesn't fit into busy array, connection will not be traceable.");
                     }
+                    // 返回连接
                     return con;
                 }
             }
+
+            // 1. 需要强制重连
+            // 2. 不需要强制重连，但状态检查未通过
             //if we reached here, that means the connection
             //is either has another principal, is discarded or validation failed.
             //we will make one more attempt
             //in order to guarantee that the thread that just acquired
             //the connection shouldn't have to poll again.
             try {
-                con.reconnect();
+                con.reconnect();  // 重连
                 reconnectedCount.incrementAndGet();
                 int validationMode = getPoolProperties().isTestOnConnect() || getPoolProperties().getInitSQL()!=null ?
                     PooledConnection.VALIDATE_INIT :
                     PooledConnection.VALIDATE_BORROW;
 
-                if (con.validate(validationMode)) {
+                if (con.validate(validationMode)) { // 状态检查通过
                     //set the timestamp
                     con.setTimestamp(now);
                     if (getPoolProperties().isLogAbandoned()) {
                         //set the stack trace for this pool
                         con.setStackTrace(getThreadDump());
                     }
-                    if (!busy.offer(con)) {
+                    if (!busy.offer(con)) { // 尝试加入 busy 队列
                         log.debug("Connection doesn't fit into busy array, connection will not be traceable.");
                     }
                     return con;
-                } else {
+                } else { // 状态检查失败（比如初始化 SQL 无法执行），报错
                     //validation failed.
                     throw new SQLException("Failed to validate a newly established connection.");
                 }
@@ -906,7 +951,7 @@ public class ConnectionPool {
      * @param con PooledConnection to be returned to the pool
      */
     protected void returnConnection(PooledConnection con) {
-        if (isClosed()) {
+        if (isClosed()) { // 如果池已经被标记为关闭，就直接释放连接（这种情形是池在关闭时仅清理了 idle 连接）
             //if the connection pool is closed
             //close the connection instead of returning it
             release(con);
@@ -927,24 +972,26 @@ public class ConnectionPool {
                                 "Connection(" + con + ") that has been marked suspect was returned.");
                     }
                 }
-                if (busy.remove(con)) {
-
+                if (busy.remove(con)) { // 尝试从 busy 队列移除
+                    // 状态检查，是否需要关闭
                     if (!shouldClose(con,PooledConnection.VALIDATE_RETURN)) {
+                        // 不需要关闭，尝试加入 idle 队列
                         con.setStackTrace(null);
                         con.setTimestamp(System.currentTimeMillis());
                         if (((idle.size()>=poolProperties.getMaxIdle()) && !poolProperties.isPoolSweeperEnabled()) || (!idle.offer(con))) {
                             if (log.isDebugEnabled()) {
                                 log.debug("Connection ["+con+"] will be closed and not returned to the pool, idle["+idle.size()+"]>=maxIdle["+poolProperties.getMaxIdle()+"] idle.offer failed.");
                             }
+                            // 加入 idle 队列失败，关闭连接
                             release(con);
                         }
-                    } else {
+                    } else { // 需要关闭，关闭连接
                         if (log.isDebugEnabled()) {
                             log.debug("Connection ["+con+"] will be closed and not returned to the pool.");
                         }
                         release(con);
                     } //end if
-                } else {
+                } else { // 本就不在 busy 队列中（borrow 时没能加入到 busy 队列中）
                     if (log.isDebugEnabled()) {
                         log.debug("Connection ["+con+"] will be closed and not returned to the pool, busy.remove failed.");
                     }
@@ -1171,6 +1218,7 @@ public class ConnectionPool {
      * @param finalizing <code>true</code> if finalizing the connection
      */
     protected void disconnectEvent(PooledConnection con, boolean finalizing) {
+        // 触发所有拦截器的 disconnect 动作
         JdbcInterceptor handler = con.getHandler();
         while (handler!=null) {
             handler.disconnected(this, con, finalizing);

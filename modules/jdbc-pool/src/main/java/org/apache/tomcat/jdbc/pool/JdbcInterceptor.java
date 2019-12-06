@@ -107,6 +107,7 @@ public abstract class JdbcInterceptor implements InvocationHandler {
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         if (getNext()!=null) return getNext().invoke(proxy,method,args);
         else throw new NullPointerException();
+        // 只要该方法被调用，next 指针一定不为空，因为尾节点 ProxyConnection 不会调用这个方法
     }
 
     /**

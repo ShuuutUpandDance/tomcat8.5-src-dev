@@ -186,23 +186,24 @@ public class PooledConnection {
      */
     public void connect() throws SQLException {
         if (released.get()) throw new SQLException("A connection once released, can't be reestablished.");
-        if (connection != null) {
+        if (connection != null) { // 如果已经建立过 connection
             try {
-                this.disconnect(false);
+                this.disconnect(false); // 先断开再重新建立
             } catch (Exception x) {
                 log.debug("Unable to disconnect previous connection.", x);
             } //catch
         } //end if
-        if (poolProperties.getDataSource()==null && poolProperties.getDataSourceJNDI()!=null) {
+//        if (poolProperties.getDataSource()==null && poolProperties.getDataSourceJNDI()!=null) {
             //TODO lookup JNDI name
-        }
+//        }
 
         if (poolProperties.getDataSource()!=null) {
-            connectUsingDataSource();
+            connectUsingDataSource(); // 指定了 datasource，直接从 datasource 获取连接
         } else {
-            connectUsingDriver();
+            connectUsingDriver(); // 使用 driver 建立连接
         }
 
+        // 设置默认参数
         //set up the default state, unless we expect the interceptor to do it
         if (poolProperties.getJdbcInterceptors()==null || poolProperties.getJdbcInterceptors().indexOf(ConnectionState.class.getName())<0 ||
                 poolProperties.getJdbcInterceptors().indexOf(ConnectionState.class.getSimpleName())<0) {
@@ -369,10 +370,12 @@ public class PooledConnection {
         if (isDiscarded() && connection == null) {
             return;
         }
-        setDiscarded(true);
+        setDiscarded(true); // 修改状态
         if (connection != null) {
             try {
+                // 触发所有拦截器的 disconnect 事件
                 parent.disconnectEvent(this, finalize);
+                // 真正关闭连接
                 if (xaConnection == null) {
                     connection.close();
                 } else {
@@ -387,7 +390,7 @@ public class PooledConnection {
         connection = null;
         xaConnection = null;
         lastConnected = -1;
-        if (finalize) parent.finalize(this);
+        if (finalize) parent.finalize(this); // 重置所有拦截器
     }
 
 
